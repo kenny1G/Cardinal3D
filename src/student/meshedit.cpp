@@ -75,9 +75,64 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::collapse_face(Halfedge_Me
     flipped edge.
 */
 std::optional<Halfedge_Mesh::EdgeRef> Halfedge_Mesh::flip_edge(Halfedge_Mesh::EdgeRef e) {
+    EdgeRef e0 = e;
+    if(e0->halfedge()->is_boundary() || e0->halfedge()->twin()->is_boundary()) {
+        return std::nullopt;
+    }
 
-    (void)e;
-    return std::nullopt;
+    HalfedgeRef h0 = e0->halfedge();
+    HalfedgeRef h1 = h0->twin();
+
+    HalfedgeRef h_check = h0->next()->next();
+    do {
+        if(h_check->next()->vertex() == h1->next()->next()->vertex()) {
+            return std::nullopt;
+        }
+        h_check = h_check->twin()->next();
+    } while(h_check != h0->next()->next());
+
+    HalfedgeRef h2 = h0->next();
+    HalfedgeRef h3 = h1->next();
+
+    if(h0->vertex()->halfedge() == h0) {
+        h0->vertex()->halfedge() = h3;
+    }
+    if(h1->vertex()->halfedge() == h1) {
+        h1->vertex()->halfedge() = h2;
+    }
+
+    if(h2->face()->halfedge() == h2) {
+        h2->face()->halfedge() = h2->next();
+    }
+    if(h3->face()->halfedge() == h3) {
+        h3->face()->halfedge() = h3->next();
+    }
+
+    HalfedgeRef h4 = h0;
+    do {
+        h4 = h4->next();
+    } while(h4->next() != h0);
+
+    HalfedgeRef h5 = h1;
+    do {
+        h5 = h5->next();
+    } while(h5->next() != h1);
+
+    h0->vertex() = h1->next()->next()->vertex();
+    h1->vertex() = h0->next()->next()->vertex();
+
+    h0->next() = h0->next()->next();
+    h1->next() = h1->next()->next();
+
+    h2->face() = h1->face();
+    h2->next() = h1;
+    h3->face() = h0->face();
+    h3->next() = h0;
+
+    h4->next() = h3;
+    h5->next() = h2;
+
+    return e0;
 }
 
 /*
@@ -87,8 +142,169 @@ std::optional<Halfedge_Mesh::EdgeRef> Halfedge_Mesh::flip_edge(Halfedge_Mesh::Ed
 */
 std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh::EdgeRef e) {
 
-    (void)e;
-    return std::nullopt;
+    if(!e->on_boundary()) {
+        VertexRef v0 = new_vertex();
+        v0->pos = e->center();
+        std::vector<HalfedgeRef> halfedges_;
+        auto h = e->halfedge()->next();
+
+        do {
+            halfedges_.push_back(h);
+            h = h->next();
+        } while(h->next() != e->halfedge()->next());
+        h = e->halfedge()->twin()->next();
+        do {
+            halfedges_.push_back(h);
+            h = h->next();
+        } while(h->next() != e->halfedge()->twin()->next());
+
+        HalfedgeRef h0 = e->halfedge();
+        HalfedgeRef h1 = h0->twin();
+        VertexRef v1 = h0->vertex();
+        VertexRef v2 = h1->vertex();
+
+        if(v1->halfedge() == h0) {
+            v1->halfedge() = h1->next();
+            h1->next()->vertex() = v1;
+        }
+        if(v2->halfedge() == h1) {
+            v2->halfedge() = h0->next();
+            h0->next()->vertex() = v2;
+        }
+
+        erase(h0->face());
+        erase(h1->face());
+        erase(h1);
+        erase(h0);
+        erase(e);
+
+        std::vector<HalfedgeRef> right;
+        std::vector<HalfedgeRef> left;
+        for(size_t i = 0; i < halfedges_.size(); i++) {
+            EdgeRef e0 = new_edge();
+            HalfedgeRef h2 = new_halfedge();
+            HalfedgeRef h3 = new_halfedge();
+            FaceRef f0 = new_face();
+            e0->halfedge() = h2;
+            f0->halfedge() = halfedges_[i];
+            halfedges_[i]->face() = f0;
+            h2->set_neighbors(halfedges_[i], h3, v0, e0, f0);
+            h3->twin() = h2;
+            h3->vertex() = halfedges_[i]->vertex();
+            h3->edge() = e0;
+            right.push_back(h3);
+            left.push_back(h2);
+        }
+
+        int N = (int)halfedges_.size();
+        for(size_t i = 0; i < halfedges_.size(); i++) {
+            int prev = (i + N - 1) % N;
+            HalfedgeRef hprev = halfedges_[prev];
+            hprev->next() = right[i];
+            right[i]->face() = hprev->face();
+            right[i]->next() = left[prev];
+        }
+
+        v0->halfedge() = left[0];
+        return v0;
+    }
+    HalfedgeRef h0 = e->halfedge();
+    if(h0->is_boundary()) {
+        h0 = h0->twin();
+    }
+    HalfedgeRef h1 = h0->next();
+    HalfedgeRef h2 = h1->next();
+    HalfedgeRef h3 = h0->twin();
+
+    if(h2->next() != h0) {
+        return std::nullopt;
+    }
+
+    HalfedgeRef h4 = new_halfedge();
+    HalfedgeRef h5 = new_halfedge();
+    HalfedgeRef h6 = new_halfedge();
+    HalfedgeRef h7 = new_halfedge();
+    HalfedgeRef h8 = new_halfedge();
+    HalfedgeRef h9 = new_halfedge();
+
+    VertexRef v0 = new_vertex();
+    v0->pos = (h0->vertex()->pos + h3->vertex()->pos) / 2.f;
+
+    EdgeRef e0 = new_edge();
+    EdgeRef e1 = new_edge();
+    EdgeRef e2 = new_edge();
+
+    FaceRef f0 = new_face();
+    FaceRef f1 = new_face();
+
+    h4->vertex() = v0;
+    h4->edge() = e0;
+    h4->face() = f0;
+    h4->next() = h1;
+    h4->twin() = h5;
+
+    h5->vertex() = h1->vertex();
+    h5->edge() = e0;
+    h5->face() = h3->face();
+    h5->next() = h6;
+    h5->twin() = h4;
+
+    h6->vertex() = v0;
+    h6->edge() = e1;
+    h6->face() = h3->face();
+    h6->next() = h3->next();
+    h6->twin() = h7;
+
+    h7->vertex() = h0->vertex();
+    h7->edge() = e1;
+    h7->face() = f1;
+    h7->next() = h8;
+    h7->twin() = h6;
+
+    h8->vertex() = v0;
+    h8->edge() = e2;
+    h8->face() = f1;
+    h8->next() = h2;
+    h8->twin() = h9;
+
+    h9->vertex() = h2->vertex();
+    h9->edge() = e2;
+    h9->face() = f0;
+    h9->next() = h4;
+    h9->twin() = h8;
+
+    h1->face() = f0;
+    h1->next() = h9;
+
+    h2->face() = f1;
+    h2->next() = h7;
+
+    unsigned int boundary_face_degree = h3->face()->degree();
+    HalfedgeRef prev = h3;
+    for(unsigned int i = 0; i < boundary_face_degree - 1; i++) {
+        prev = prev->next();
+    }
+    prev->next() = h5;
+
+    v0->halfedge() = h4;
+    h1->vertex()->halfedge() = h1;
+    h2->twin()->vertex()->halfedge() = h2->twin();
+
+    e0->halfedge() = h4;
+    e1->halfedge() = h7;
+    e2->halfedge() = h8;
+
+    f0->halfedge() = h4;
+    f1->halfedge() = h8;
+    h3->face()->halfedge() = h5;
+
+    FaceRef old_face = h0->face();
+    erase(h0);
+    erase(h3);
+    erase(e);
+    erase(old_face);
+
+    return v0;
 }
 
 /* Note on the beveling process:
