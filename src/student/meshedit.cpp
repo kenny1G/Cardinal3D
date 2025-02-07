@@ -548,11 +548,11 @@ void Halfedge_Mesh::bevel_face_positions(const std::vector<Vec3>& start_position
 
     size_t N = new_halfedges.size();
     Vec3 center = Vec3(0, 0, 0);
-    for(size_t i = 0; i < N; i++) {
+    for(size_t i = 0; i < N; ++i) {
         center += start_positions[i];
     }
     tangent_offset = std::max(-0.95f, tangent_offset);
-    for(size_t i = 0; i < N; i++) {
+    for(size_t i = 0; i < N; ++i) {
         Vec3 start_pos = start_positions[i];
         new_halfedges[i]->vertex()->pos =
             start_pos + tangent_offset * (start_pos - center / N) + -normal_offset * face->normal();
@@ -565,6 +565,34 @@ void Halfedge_Mesh::bevel_face_positions(const std::vector<Vec3>& start_position
 void Halfedge_Mesh::triangulate() {
 
     // For each face...
+    for(FaceRef f = faces_begin(); f != faces_end(); ++f) {
+        HalfedgeRef og_halfedge = f->halfedge();
+        VertexRef og_vertex = og_halfedge->vertex();
+
+        HalfedgeRef it = og_halfedge;
+        while(it->next()->next()->next() != og_halfedge) {
+            EdgeRef new_e = new_edge();
+            FaceRef new_f = new_face();
+            HalfedgeRef new_he = new_halfedge();
+            HalfedgeRef twin_he = new_halfedge();
+
+            new_he->set_neighbors(it->next()->next(), twin_he, og_vertex, new_e, new_f);
+            twin_he->set_neighbors(it, new_he, it->next()->next()->vertex(), new_e, f);
+
+            new_e->halfedge() = twin_he;
+            new_f->halfedge() = twin_he;
+
+            it->face() = new_f;
+            it->next()->next() = twin_he;
+            it->next()->face() = new_f;
+
+            it = new_he;
+        }
+
+        it->next()->next()->next() = it;
+        it->face() = f;
+        f->halfedge() = it;
+    }
 }
 
 /* Note on the quad subdivision process:
