@@ -55,9 +55,114 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::erase_edge(Halfedge_Mesh::E
     This method should collapse the given edge and return an iterator to
     the new vertex created by the collapse.
 */
-std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::collapse_edge(Halfedge_Mesh::EdgeRef e) {
-    (void)e;
-    return std::nullopt;
+std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::collapse_edge(Halfedge_Mesh::EdgeRef edge) {
+    HalfedgeRef halves[2] = {edge->halfedge(), edge->halfedge()->twin()};
+    HalfedgeRef ends[2];
+    int vertex_counts[2];
+    for(int i = 0; i < 2; ++i) {
+        HalfedgeRef first = halves[i];
+        HalfedgeRef end = first;
+        int count = 1;
+        while(end->next() != first) {
+            count++;
+            end = end->next();
+        }
+        ends[i] = end;
+        vertex_counts[i] = count;
+    }
+    if(halves[0]->is_boundary() || halves[1]->is_boundary()) {
+        int inner_idx = halves[0]->is_boundary() ? 1 : 0;
+        if(vertex_counts[inner_idx] == 3 && halves[inner_idx]->next()->twin()->is_boundary() &&
+           ends[inner_idx]->twin()->is_boundary()) {
+            return std::nullopt;
+        }
+    } else {
+        for(int i = 0; i < 2; ++i) {
+            if(vertex_counts[i] == 3 &&
+               ends[i]->twin()->next()->edge() == halves[i]->next()->edge()) {
+                return std::nullopt;
+            }
+        }
+        std::vector<HalfedgeRef> ring_halfedges;
+        HalfedgeRef iter = halves[0]->next();
+        do {
+            ring_halfedges.push_back(iter->twin());
+            iter = iter->twin()->next();
+        } while(iter != ends[1]->twin());
+        iter = halves[1]->next();
+        do {
+            for(auto& hedge : ring_halfedges) {
+                if(hedge->vertex()->id() == iter->twin()->vertex()->id() &&
+                   !(hedge->edge()->id() == ends[1]->edge()->id() ||
+                     iter->edge()->id() == ends[0]->edge()->id())) {
+                    return std::nullopt;
+                }
+            }
+            iter = iter->twin()->next();
+        } while(iter != ends[0]->twin());
+        int boundary_count = 0;
+        for(int i = 0; i < 2; ++i) {
+            HalfedgeRef walker = halves[i];
+            do {
+                if(walker->is_boundary()) {
+                    boundary_count++;
+                    break;
+                }
+                walker = walker->twin()->next();
+            } while(walker != halves[i]);
+        }
+        if(boundary_count == 2) {
+            return std::nullopt;
+        }
+    }
+    for(int i = 0; i < 2; ++i) {
+        vertex_counts[i] = halves[i]->face()->degree();
+        if(vertex_counts[i] == 3) {
+            FaceRef doomed_face = halves[i]->face();
+            halves[i]->face() = ends[i]->twin()->face();
+            halves[i]->next()->next() = ends[i]->twin()->next();
+            halves[i]->next()->face() = ends[i]->twin()->face();
+            HalfedgeRef twin_last = ends[i]->twin();
+            while(twin_last->next() != ends[i]->twin()) {
+                twin_last = twin_last->next();
+            }
+            twin_last->next() = halves[i];
+            erase(doomed_face);
+            ends[i]->vertex()->halfedge() = ends[i]->twin()->next();
+            ends[i]->twin()->vertex()->halfedge() = halves[i];
+            ends[i]->twin()->face()->halfedge() = ends[i]->twin()->next();
+            erase(ends[i]->edge());
+            erase(ends[i]->twin());
+            erase(ends[i]);
+            ends[i] = twin_last;
+        }
+    }
+    HalfedgeRef current = halves[1]->next();
+    while(current != halves[0]) {
+        current->vertex() = halves[1]->vertex();
+        current = current->twin()->next();
+    }
+    if(vertex_counts[0] == 3) {
+        ends[0]->next() = halves[0]->next();
+        ends[1]->next() = halves[1]->next();
+        halves[0]->face()->halfedge() = ends[0];
+        halves[1]->face()->halfedge() = ends[1];
+    } else {
+        ends[1]->next() = halves[1]->next();
+        ends[0]->next() = halves[0]->next();
+        halves[1]->face()->halfedge() = ends[1];
+        halves[0]->face()->halfedge() = ends[0];
+    }
+    halves[1]->vertex()->halfedge() =
+        herased.count(halves[1]->next()) ? halves[0]->next() : halves[1]->next();
+    halves[1]->vertex()->pos =
+        (halves[1]->vertex()->center() + halves[0]->vertex()->center()) / 2.f;
+    VertexRef surviving_vertex = halves[1]->vertex();
+    erase(halves[0]->edge());
+    erase(halves[0]->vertex());
+    erase(halves[0]);
+    erase(halves[1]);
+    return surviving_vertex;
 }
 
 /*
@@ -180,7 +285,7 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh:
 
         std::vector<HalfedgeRef> right;
         std::vector<HalfedgeRef> left;
-        for(size_t i = 0; i < halfedges_.size(); i++) {
+        for(size_t i = 0; i < halfedges_.size(); ++i) {
             EdgeRef e0 = new_edge();
             HalfedgeRef h2 = new_halfedge();
             HalfedgeRef h3 = new_halfedge();
@@ -189,15 +294,13 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh:
             f0->halfedge() = halfedges_[i];
             halfedges_[i]->face() = f0;
             h2->set_neighbors(halfedges_[i], h3, v0, e0, f0);
-            h3->twin() = h2;
-            h3->vertex() = halfedges_[i]->vertex();
-            h3->edge() = e0;
+            h3->set_neighbors(h3->next(), h2, halfedges_[i]->vertex(), e0, h3->face());
             right.push_back(h3);
             left.push_back(h2);
         }
 
         int N = (int)halfedges_.size();
-        for(size_t i = 0; i < halfedges_.size(); i++) {
+        for(size_t i = 0; i < halfedges_.size(); ++i) {
             int prev = (i + N - 1) % N;
             HalfedgeRef hprev = halfedges_[prev];
             hprev->next() = right[i];
@@ -237,41 +340,12 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh:
     FaceRef f0 = new_face();
     FaceRef f1 = new_face();
 
-    h4->vertex() = v0;
-    h4->edge() = e0;
-    h4->face() = f0;
-    h4->next() = h1;
-    h4->twin() = h5;
-
-    h5->vertex() = h1->vertex();
-    h5->edge() = e0;
-    h5->face() = h3->face();
-    h5->next() = h6;
-    h5->twin() = h4;
-
-    h6->vertex() = v0;
-    h6->edge() = e1;
-    h6->face() = h3->face();
-    h6->next() = h3->next();
-    h6->twin() = h7;
-
-    h7->vertex() = h0->vertex();
-    h7->edge() = e1;
-    h7->face() = f1;
-    h7->next() = h8;
-    h7->twin() = h6;
-
-    h8->vertex() = v0;
-    h8->edge() = e2;
-    h8->face() = f1;
-    h8->next() = h2;
-    h8->twin() = h9;
-
-    h9->vertex() = h2->vertex();
-    h9->edge() = e2;
-    h9->face() = f0;
-    h9->next() = h4;
-    h9->twin() = h8;
+    h4->set_neighbors(h1, h5, v0, e0, f0);
+    h5->set_neighbors(h6, h4, h1->vertex(), e0, h3->face());
+    h6->set_neighbors(h3->next(), h7, v0, e1, h3->face());
+    h7->set_neighbors(h8, h6, h0->vertex(), e1, f1);
+    h8->set_neighbors(h2, h9, v0, e2, f1);
+    h9->set_neighbors(h4, h8, h2->vertex(), e2, f0);
 
     h1->face() = f0;
     h1->next() = h9;
@@ -281,7 +355,7 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh:
 
     unsigned int boundary_face_degree = h3->face()->degree();
     HalfedgeRef prev = h3;
-    for(unsigned int i = 0; i < boundary_face_degree - 1; i++) {
+    for(unsigned int i = 0; i < boundary_face_degree - 1; ++i) {
         prev = prev->next();
     }
     prev->next() = h5;
@@ -383,7 +457,7 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
 
     std::vector<HalfedgeRef> h0;
     HalfedgeRef h = f->halfedge();
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         h0.push_back(h);
         h = h->next();
     }
@@ -392,7 +466,7 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
     std::vector<HalfedgeRef> h2;
     std::vector<HalfedgeRef> h3;
     std::vector<HalfedgeRef> h4;
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         h1.push_back(new_halfedge());
         h2.push_back(new_halfedge());
         h3.push_back(new_halfedge());
@@ -400,7 +474,7 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
     }
 
     std::vector<VertexRef> v;
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         VertexRef new_v = new_vertex();
         new_v->pos = h0[i]->vertex()->pos;
         v.push_back(new_v);
@@ -408,17 +482,17 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
 
     std::vector<EdgeRef> e0;
     std::vector<EdgeRef> e1;
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         e0.push_back(new_edge());
         e1.push_back(new_edge());
     }
 
     std::vector<FaceRef> f1;
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         f1.push_back(new_face());
     }
 
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         h0[i]->face() = f1[i];
         h0[i]->next() = h1[(i + 1) % n];
 
@@ -432,17 +506,17 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
         h4[i]->set_neighbors(h2[i], h3[i], v[(i + 1) % n], e1[i], f1[i]);
     }
 
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         v[i]->halfedge() = h3[i];
     }
 
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         e0[i]->halfedge() = h1[i];
         e1[i]->halfedge() = h3[i];
     }
 
     f->halfedge() = h3[0];
-    for(unsigned int i = 0; i < n; i++) {
+    for(unsigned int i = 0; i < n; ++i) {
         f1[i]->halfedge() = h4[i];
     }
 
@@ -469,7 +543,7 @@ void Halfedge_Mesh::bevel_vertex_positions(const std::vector<Vec3>& start_positi
         h = h->next();
     } while(h != face->halfedge());
 
-    for(size_t i = 0; i < new_halfedges.size(); i++) {
+    for(size_t i = 0; i < new_halfedges.size(); ++i) {
         Vec3 tv_pos = new_halfedges[i]->twin()->next()->twin()->vertex()->pos;
         new_halfedges[i]->vertex()->pos =
             start_positions[i] +
@@ -491,7 +565,7 @@ void Halfedge_Mesh::bevel_vertex_positions(const std::vector<Vec3>& start_positi
     newHalfedges and vertex positions
     in orig.  So, you can write loops of the form
 
-    for(size_t i = 0; i < new_halfedges.size(); i++)
+    for(size_t i = 0; i < new_halfedges.size(); ++i)
     {
             Vector3D pi = start_positions[i]; // get the original vertex
             position corresponding to vertex i
@@ -528,7 +602,7 @@ void Halfedge_Mesh::bevel_edge_positions(const std::vector<Vec3>& start_position
     new_halfedges and vertex positions
     in orig. So, you can write loops of the form
 
-    for(size_t i = 0; i < new_halfedges.size(); i++)
+    for(size_t i = 0; i < new_halfedges.size(); ++i)
     {
             Vec3 pi = start_positions[i]; // get the original vertex
             position corresponding to vertex i
@@ -692,10 +766,40 @@ void Halfedge_Mesh::catmullclark_subdivide_positions() {
     // rules. (These rules are outlined in the Developer Manual.)
 
     // Faces
+    Vec3 face_total;
+    for(FaceRef f = faces_begin(); f != faces_end(); ++f) {
+        f->new_pos = f->center();
+        face_total += f->new_pos;
+    }
 
     // Edges
+    for(EdgeRef e = edges_begin(); e != edges_end(); ++e) {
+        Vec3 ME = e->center();
+        FaceRef A = e->halfedge()->face();
+        FaceRef F = e->halfedge()->twin()->face();
+        Vec3 AF = 0.5f * (A->new_pos + F->new_pos);
+        e->new_pos = 0.5f * (AF + ME);
+    }
 
     // Vertices
+    for(VertexRef v = vertices_begin(); v != vertices_end(); ++v) {
+        float n = 0;
+        Vec3 Q;
+        Vec3 R;
+        Vec3 S = v->pos;
+        HalfedgeRef h = v->halfedge();
+        /*Iterate through each of v's connected faces*/
+        do {
+            h = h->twin();
+            Q += h->face()->new_pos;
+            R += h->edge()->center();
+            h = h->next();
+            n += 1;
+        } while(h != v->halfedge());
+        Q = Q / n;
+        R = R / n;
+        v->new_pos = (Q + (2 * R) + ((n - 3) * S)) / n;
+    }
 }
 
 /*
@@ -790,6 +894,16 @@ struct Edge_Record {
         //    Edge_Record::optimal.
         // -> Also store the cost associated with collapsing this edge in
         //    Edge_Record::cost.
+        const Mat4 Q = vertex_quadrics[e->halfedge()->vertex()] +
+                       vertex_quadrics[e->halfedge()->twin()->vertex()];
+        const Mat4 system(
+            Vec4(Q[0][0], Q[0][1], Q[0][2], 0.f), Vec4(Q[0][1], Q[1][1], Q[1][2], 0.f),
+            Vec4(Q[0][2], Q[1][2], Q[2][2], 0.f), Vec4(Q[0][3], Q[1][3], Q[2][3], 1.f));
+        /* Assuming this matrix is invertible. A better solution should check the determinant and
+         * possibly resort to a heuristic point on the edge. */
+        const Vec4 solution = system.inverse()[3];
+        optimal = Vec3(solution[0], solution[1], solution[2]);
+        cost = dot((Q * solution), solution);
     }
     Halfedge_Mesh::EdgeRef edge;
     Vec3 optimal;
@@ -894,28 +1008,91 @@ bool Halfedge_Mesh::simplify() {
     std::unordered_map<FaceRef, Mat4> face_quadrics;
     std::unordered_map<EdgeRef, Edge_Record> edge_records;
     PQueue<Edge_Record> edge_queue;
+    std::set<EdgeRef> collapsed_edges;
 
     // Compute initial quadrics for each face by simply writing the plane equation
     // for the face in homogeneous coordinates. These quadrics should be stored
     // in face_quadrics
+    for(FaceRef f = faces_begin(); f != faces_end(); ++f) {
+        Vec3 norm = f->normal();
+        float d = dot(norm, f->halfedge()->vertex()->pos);
+        Vec4 v(norm.x, norm.y, norm.z, d);
+        Mat4 quadric = outer(v, v);
+        face_quadrics[f] = quadric;
+    }
     // -> Compute an initial quadric for each vertex as the sum of the quadrics
     //    associated with the incident faces, storing it in vertex_quadrics
+    for(VertexRef v = vertices_begin(); v != vertices_end(); ++v) {
+        /*Iterate through each of v's connected faces*/
+        Mat4 quadric = Mat4::Zero;
+        HalfedgeRef h = v->halfedge();
+        do {
+            quadric += face_quadrics[h->face()];
+            h = h->twin()->next();
+        } while(h != v->halfedge());
+        vertex_quadrics[v] = quadric;
+    }
     // -> Build a priority queue of edges according to their quadric error cost,
     //    i.e., by building an Edge_Record for each edge and sticking it in the
     //    queue. You may want to use the above PQueue<Edge_Record> for this.
+    for(EdgeRef e = edges_begin(); e != edges_end(); ++e) {
+        Edge_Record er = Edge_Record(vertex_quadrics, e);
+        edge_records[e] = er;
+        edge_queue.insert(er);
+    }
+
     // -> Until we reach the target edge budget, collapse the best edge. Remember
     //    to remove from the queue any edge that touches the collapsing edge
     //    BEFORE it gets collapsed, and add back into the queue any edge touching
     //    the collapsed vertex AFTER it's been collapsed. Also remember to assign
     //    a quadric to the collapsed vertex, and to pop the collapsed edge off the
     //    top of the queue.
+    Size face_target = n_faces() / 4;
+    if(face_target < 2) return false;
+    while(edge_queue.size() > 0 && n_faces() > face_target) {
+        EdgeRef collapse_candidate = edge_queue.top().edge;
+        edge_queue.pop();
+        collapsed_edges.insert(collapse_candidate);
 
-    // Note: if you erase elements in a local operation, they will not be actually deleted
-    // until do_erase or validate are called. This is to facilitate checking
-    // for dangling references to elements that will be erased.
-    // The rest of the codebase will automatically call validate() after each op,
-    // but here simply calling collapse_edge() will not erase the elements.
-    // You should use collapse_edge_erase() instead for the desired behavior.
+        std::set<EdgeRef> adjacent_edges;
+        HalfedgeRef iter_half = collapse_candidate->halfedge()->next();
+        while(iter_half->edge() != collapse_candidate) {
+            adjacent_edges.insert(iter_half->edge());
+            iter_half = iter_half->twin()->next();
+        }
+        iter_half = collapse_candidate->halfedge()->twin()->next();
+        while(iter_half->edge() != collapse_candidate) {
+            adjacent_edges.insert(iter_half->edge());
+            iter_half = iter_half->twin()->next();
+        }
+        for(const EdgeRef& adj : adjacent_edges) edge_queue.remove(edge_records[adj]);
 
-    return false;
+        const Mat4 merged_quadric =
+            vertex_quadrics[collapse_candidate->halfedge()->vertex()] +
+            vertex_quadrics[collapse_candidate->halfedge()->twin()->vertex()];
+        std::optional<VertexRef> result_vertex = collapse_edge_erase(collapse_candidate);
+
+        if(result_vertex) {
+            vertex_quadrics[*result_vertex] = merged_quadric;
+            iter_half = (*result_vertex)->halfedge();
+            do {
+                if(adjacent_edges.find(iter_half->edge()) != adjacent_edges.end() &&
+                   collapsed_edges.find(iter_half->edge()) == collapsed_edges.end()) {
+                    edge_records[iter_half->edge()] =
+                        Edge_Record(vertex_quadrics, iter_half->edge());
+                    edge_queue.insert(edge_records[iter_half->edge()]);
+                }
+                iter_half = iter_half->twin()->next();
+            } while(iter_half != (*result_vertex)->halfedge());
+        } else {
+            for(const EdgeRef& adj : adjacent_edges) {
+                if(collapsed_edges.find(adj) != collapsed_edges.end()) continue;
+
+                edge_records[adj] = Edge_Record(vertex_quadrics, adj);
+                edge_queue.insert(edge_records[adj]);
+            }
+        }
+    }
+
+    return true;
 }
