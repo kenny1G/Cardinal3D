@@ -1,4 +1,5 @@
 
+#include <cstddef>
 #include <queue>
 #include <set>
 #include <unordered_map>
@@ -55,7 +56,6 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::erase_edge(Halfedge_Mesh::E
     the new vertex created by the collapse.
 */
 std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::collapse_edge(Halfedge_Mesh::EdgeRef e) {
-
     (void)e;
     return std::nullopt;
 }
@@ -147,11 +147,11 @@ std::optional<Halfedge_Mesh::VertexRef> Halfedge_Mesh::split_edge(Halfedge_Mesh:
         v0->pos = e->center();
         std::vector<HalfedgeRef> halfedges_;
         auto h = e->halfedge()->next();
-
         do {
             halfedges_.push_back(h);
             h = h->next();
         } while(h->next() != e->halfedge()->next());
+
         h = e->halfedge()->twin()->next();
         do {
             halfedges_.push_back(h);
@@ -379,8 +379,74 @@ std::optional<Halfedge_Mesh::FaceRef> Halfedge_Mesh::bevel_face(Halfedge_Mesh::F
     // Reminder: You should set the positions of new vertices (v->pos) to be exactly
     // the same as wherever they "started from."
 
-    (void)f;
-    return std::nullopt;
+    unsigned int n = f->degree();
+
+    std::vector<HalfedgeRef> h0;
+    HalfedgeRef h = f->halfedge();
+    for(unsigned int i = 0; i < n; i++) {
+        h0.push_back(h);
+        h = h->next();
+    }
+
+    std::vector<HalfedgeRef> h1;
+    std::vector<HalfedgeRef> h2;
+    std::vector<HalfedgeRef> h3;
+    std::vector<HalfedgeRef> h4;
+    for(unsigned int i = 0; i < n; i++) {
+        h1.push_back(new_halfedge());
+        h2.push_back(new_halfedge());
+        h3.push_back(new_halfedge());
+        h4.push_back(new_halfedge());
+    }
+
+    std::vector<VertexRef> v;
+    for(unsigned int i = 0; i < n; i++) {
+        VertexRef new_v = new_vertex();
+        new_v->pos = h0[i]->vertex()->pos;
+        v.push_back(new_v);
+    }
+
+    std::vector<EdgeRef> e0;
+    std::vector<EdgeRef> e1;
+    for(unsigned int i = 0; i < n; i++) {
+        e0.push_back(new_edge());
+        e1.push_back(new_edge());
+    }
+
+    std::vector<FaceRef> f1;
+    for(unsigned int i = 0; i < n; i++) {
+        f1.push_back(new_face());
+    }
+
+    for(unsigned int i = 0; i < n; i++) {
+        h0[i]->face() = f1[i];
+        h0[i]->next() = h1[(i + 1) % n];
+
+        h1[i]->set_neighbors(h4[(i - 1 + n) % n], h2[i], h0[i]->vertex(), e0[i],
+                             f1[(i - 1 + n) % n]);
+
+        h2[i]->set_neighbors(h0[i], h1[i], v[i], e0[i], f1[i]);
+
+        h3[i]->set_neighbors(h3[(i + 1) % n], h4[i], v[i], e1[i], f);
+
+        h4[i]->set_neighbors(h2[i], h3[i], v[(i + 1) % n], e1[i], f1[i]);
+    }
+
+    for(unsigned int i = 0; i < n; i++) {
+        v[i]->halfedge() = h3[i];
+    }
+
+    for(unsigned int i = 0; i < n; i++) {
+        e0[i]->halfedge() = h1[i];
+        e1[i]->halfedge() = h3[i];
+    }
+
+    f->halfedge() = h3[0];
+    for(unsigned int i = 0; i < n; i++) {
+        f1[i]->halfedge() = h4[i];
+    }
+
+    return f;
 }
 
 /*
@@ -403,10 +469,12 @@ void Halfedge_Mesh::bevel_vertex_positions(const std::vector<Vec3>& start_positi
         h = h->next();
     } while(h != face->halfedge());
 
-    (void)new_halfedges;
-    (void)start_positions;
-    (void)face;
-    (void)tangent_offset;
+    for(size_t i = 0; i < new_halfedges.size(); i++) {
+        Vec3 tv_pos = new_halfedges[i]->twin()->next()->twin()->vertex()->pos;
+        new_halfedges[i]->vertex()->pos =
+            start_positions[i] +
+            std::max(0.05f, std::min(0.95f, -tangent_offset)) * (tv_pos - start_positions[i]);
+    }
 }
 
 /*
@@ -478,11 +546,17 @@ void Halfedge_Mesh::bevel_face_positions(const std::vector<Vec3>& start_position
         h = h->next();
     } while(h != face->halfedge());
 
-    (void)new_halfedges;
-    (void)start_positions;
-    (void)face;
-    (void)tangent_offset;
-    (void)normal_offset;
+    size_t N = new_halfedges.size();
+    Vec3 center = Vec3(0, 0, 0);
+    for(size_t i = 0; i < N; i++) {
+        center += start_positions[i];
+    }
+    tangent_offset = std::max(-0.95f, tangent_offset);
+    for(size_t i = 0; i < N; i++) {
+        Vec3 start_pos = start_positions[i];
+        new_halfedges[i]->vertex()->pos =
+            start_pos + tangent_offset * (start_pos - center / N) + -normal_offset * face->normal();
+    }
 }
 
 /*
