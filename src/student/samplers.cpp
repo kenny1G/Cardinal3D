@@ -12,12 +12,14 @@ Vec2 Rect::Uniform::sample(float& pdf) const {
 
     // Tip: consider using RNG::unit()  (see util/rand.h)
 
+    Vec2 xy((float)size.x * RNG::unit(), (float)size.y * RNG::unit());
+
     // PDF is the probability density of the chosen sample
     // the PDF should integrate to 1 over the whole rectangle
-    pdf = 1.0f; 
+    pdf = 1.0f / (size.x * size.y);
 
     // Return the randomly generated point
-    return Vec2();
+    return xy;
 }
 
 Vec3 Hemisphere::Cosine::sample(float& pdf) const {
