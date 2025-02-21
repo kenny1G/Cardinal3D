@@ -1,10 +1,10 @@
-
 #include "../rays/bvh.h"
 #include "debug.h"
 #include <stack>
 
 namespace PT {
 
+#define NUM_BINS 32
 // construct BVH hierarchy given a vector of prims
 template<typename Primitive>
 void BVH<Primitive>::build(std::vector<Primitive>&& prims, size_t max_leaf_size) {
@@ -32,12 +32,6 @@ void BVH<Primitive>::build(std::vector<Primitive>&& prims, size_t max_leaf_size)
     // Please use the SAH as described in class.  We recomment the binned build from lecture.
     // In general, here is a rough sketch:
     //
-    //  For each axis X,Y,Z:
-    //     Try possible splits along axis, evaluate SAH for each
-    //  Take minimum cost across all axes.
-    //  Partition primitives into a left and right child group
-    //  Compute left and right child bboxes
-    //  Make the left and right child nodes.
     //
     //
     // While a BVH is conceptually a tree structure, the BVH class uses a single vector (nodes)
@@ -59,62 +53,119 @@ void BVH<Primitive>::build(std::vector<Primitive>&& prims, size_t max_leaf_size)
         return;
     }
 
-    // compute bounding box for all primitives
-    BBox bb;
-    for(size_t i = 0; i < primitives.size(); ++i) {
-        bb.enclose(primitives[i].bbox());
-    }
-
     // set up root node (root BVH). Notice that it contains all primitives.
     size_t root_node_addr = new_node();
-    Node& node = nodes[root_node_addr];
-    node.bbox = bb;
-    node.start = 0;
-    node.size = primitives.size();
+    Node& root = nodes[root_node_addr];
+    root.start = 0, root.size = primitives.size();
+    update_node_bounds(root_node_addr);
+    // subdivide recursively
+    subdivide(root_node_addr, max_leaf_size);
+}
 
-    // Create bounding boxes for children
-    BBox split_leftBox;
-    BBox split_rightBox;
-
-    // compute bbox for left child
-    Primitive& p = primitives[0];
-    BBox pbb = p.bbox();
-    split_leftBox.enclose(pbb);
-
-    // compute bbox for right child
-    for(size_t i = 1; i < primitives.size(); ++i) {
-        Primitive& p = primitives[i];
-        BBox pbb = p.bbox();
-        split_rightBox.enclose(pbb);
+template<typename Primitive> void BVH<Primitive>::update_node_bounds(size_t node_idx) {
+    Node& node = nodes[node_idx];
+    node.bbox = BBox();
+    for(size_t first = node.start, i = 0; i < node.size; ++i) {
+        node.bbox.enclose(primitives[first + i].bbox());
     }
-
-    // Note that by construction in this simple example, the primitives are
-    // contiguous as required. But in the students real code, students are
-    // responsible for reorganizing the primitives in the primitives array so that
-    // after a SAH split is computed, the chidren refer to contiguous ranges of primitives.
-
-    size_t startl = 0;  // starting prim index of left child
-    size_t rangel = 1;  // number of prims in left child
-    size_t startr = startl + rangel;  // starting prim index of right child
-    size_t ranger = primitives.size() - rangel; // number of prims in right child
-
-    // create child nodes
-    size_t node_addr_l = new_node();
-    size_t node_addr_r = new_node();
-    nodes[root_node_addr].l = node_addr_l;
-    nodes[root_node_addr].r = node_addr_r;
-
-    nodes[node_addr_l].bbox = split_leftBox;
-    nodes[node_addr_l].start = startl;
-    nodes[node_addr_l].size = rangel;
-
-    nodes[node_addr_r].bbox = split_rightBox;
-    nodes[node_addr_r].start = startr;
-    nodes[node_addr_r].size = ranger;
 }
 
 template<typename Primitive>
-Trace BVH<Primitive>::hit(const Ray& ray) const {
+float BVH<Primitive>::find_best_split(size_t node_addr, int& axis, int& split_pos) {
+    float best_cost = std::numeric_limits<float>::infinity();
+    Vec3 scale = (nodes[node_addr].bbox.max - nodes[node_addr].bbox.min) / NUM_BINS;
+
+    //  For each axis X,Y,Z:
+    for(int a = 0; a < 3; a++) {
+        if(scale[a] == 0) continue;
+
+        BBox left_area[NUM_BINS];
+        size_t count[NUM_BINS];
+        memset(count, 0, sizeof(size_t) * NUM_BINS);
+
+        for(size_t i = nodes[node_addr].start; i < nodes[node_addr].start + nodes[node_addr].size;
+            i++) {
+            int bucket =
+                floor((primitives[i].bbox().center()[a] - nodes[node_addr].bbox.min[a]) / scale[a]);
+            if(bucket == NUM_BINS) bucket = NUM_BINS - 1;
+            left_area[bucket].enclose(primitives[i].bbox());
+            count[bucket]++;
+        }
+
+        BBox right_area[NUM_BINS];
+        memcpy(right_area, left_area, sizeof(BBox) * NUM_BINS);
+        // Accumulate right areas by sweeping from right to left
+        for(int i = 1; i < NUM_BINS; i++) {
+            left_area[i].enclose(left_area[i - 1]);
+            count[i] += count[i - 1];
+            // Right area accumulates from the right side
+            right_area[NUM_BINS - 1 - i].enclose(right_area[NUM_BINS - i]);
+        }
+
+        //  Try possible splits along axis, evaluate SAH for each
+        float node_area = nodes[node_addr].bbox.surface_area();
+        float axis_best_cost = std::numeric_limits<float>::infinity();
+        int best_idx = 0;
+        for(int i = 0; i < NUM_BINS - 1; i++) {
+            size_t left_count = count[i];
+            size_t right_count = nodes[node_addr].size - left_count;
+            float cost = left_area[i].surface_area() / node_area * left_count +
+                         right_area[i + 1].surface_area() / node_area * right_count;
+            if(cost < axis_best_cost) {
+                axis_best_cost = cost;
+                best_idx = i;
+            }
+        }
+
+        if(axis_best_cost < best_cost) {
+            best_cost = axis_best_cost;
+            axis = a;
+            split_pos = best_idx;
+        }
+    }
+    //  Take minimum cost across all axes.
+    return nodes[node_addr].bbox.min[axis] + (split_pos + 1) * scale[axis];
+}
+
+template<typename Primitive> void BVH<Primitive>::subdivide(size_t node_idx, size_t max_leaf_size) {
+    size_t node_start = nodes[node_idx].start;
+    size_t node_size = nodes[node_idx].size;
+
+    if(node_size <= std::max(static_cast<size_t>(NUM_BINS), max_leaf_size)) return;
+
+    int axis;
+    int split_pos;
+    float split = find_best_split(node_idx, axis, split_pos);
+
+    //  Partition primitives into a left and right child group
+    size_t i = node_start;
+    size_t j = i + node_size - 1;
+    while(i <= j) {
+        if(primitives[i].bbox().center()[axis] < split)
+            i++;
+        else
+            std::swap(primitives[i], primitives[j--]);
+    }
+
+    // abort split if one of the sides is empty
+    size_t left_count = i - node_start;
+    if(left_count == 0 || left_count == node_size) return;
+
+    size_t node_addr_l = new_node(BBox(), node_start, left_count);
+    size_t node_addr_r = new_node(BBox(), node_start + left_count, node_size - left_count);
+    //  Compute left and right child bboxes
+    update_node_bounds(node_addr_l);
+    update_node_bounds(node_addr_r);
+
+    nodes[node_idx].l = node_addr_l;
+    nodes[node_idx].r = node_addr_r;
+
+    //  Make the left and right child nodes.
+    subdivide(node_addr_l, max_leaf_size);
+    subdivide(node_addr_r, max_leaf_size);
+}
+
+template<typename Primitive> Trace BVH<Primitive>::hit(const Ray& ray) const {
 
     // TODO (PathTracer): Task 3
     // Implement ray - BVH intersection test. A ray intersects
@@ -137,8 +188,7 @@ BVH<Primitive>::BVH(std::vector<Primitive>&& prims, size_t max_leaf_size) {
     build(std::move(prims), max_leaf_size);
 }
 
-template<typename Primitive>
-BVH<Primitive> BVH<Primitive>::copy() const {
+template<typename Primitive> BVH<Primitive> BVH<Primitive>::copy() const {
     BVH<Primitive> ret;
     ret.nodes = nodes;
     ret.primitives = primitives;
@@ -146,8 +196,7 @@ BVH<Primitive> BVH<Primitive>::copy() const {
     return ret;
 }
 
-template<typename Primitive>
-bool BVH<Primitive>::Node::is_leaf() const {
+template<typename Primitive> bool BVH<Primitive>::Node::is_leaf() const {
     return l == r;
 }
 
@@ -163,19 +212,16 @@ size_t BVH<Primitive>::new_node(BBox box, size_t start, size_t size, size_t l, s
     return nodes.size() - 1;
 }
 
-template<typename Primitive>
-BBox BVH<Primitive>::bbox() const {
+template<typename Primitive> BBox BVH<Primitive>::bbox() const {
     return nodes[root_idx].bbox;
 }
 
-template<typename Primitive>
-std::vector<Primitive> BVH<Primitive>::destructure() {
+template<typename Primitive> std::vector<Primitive> BVH<Primitive>::destructure() {
     nodes.clear();
     return std::move(primitives);
 }
 
-template<typename Primitive>
-void BVH<Primitive>::clear() {
+template<typename Primitive> void BVH<Primitive>::clear() {
     nodes.clear();
     primitives.clear();
 }

@@ -32,12 +32,17 @@ public:
 private:
     class Node {
         BBox bbox;
+        // aabbMin, aabbMax
         size_t start, size, l, r;
+        // firstPrim, primCount, leftChild, rightChild
 
         bool is_leaf() const;
         friend class BVH<Primitive>;
     };
     size_t new_node(BBox box = {}, size_t start = 0, size_t size = 0, size_t l = 0, size_t r = 0);
+    void update_node_bounds(size_t node_idx);
+    float find_best_split(size_t node_addr, int& axis, int& split_pos);
+    void subdivide(size_t node_idx, size_t max_leaf_size);
 
     std::vector<Node> nodes;
     std::vector<Primitive> primitives;
