@@ -166,19 +166,50 @@ template<typename Primitive> void BVH<Primitive>::subdivide(size_t node_idx, siz
 }
 
 template<typename Primitive> Trace BVH<Primitive>::hit(const Ray& ray) const {
-
-    // TODO (PathTracer): Task 3
-    // Implement ray - BVH intersection test. A ray intersects
-    // with a BVH aggregate if and only if it intersects a primitive in
-    // the BVH that is not an aggregate.
-
-    // The starter code simply iterates through all the primitives.
-    // Again, remember you can use hit() on any Primitive value.
-
     Trace ret;
-    for(const Primitive& prim : primitives) {
-        Trace hit = prim.hit(ray);
-        ret = Trace::min(ret, hit);
+    ret.distance = std::numeric_limits<float>::infinity();
+
+    std::stack<size_t> node_stack;
+    node_stack.push(root_idx);
+
+    while(!node_stack.empty()) {
+        size_t node_addr = node_stack.top();
+        node_stack.pop();
+        const Node& node = nodes[node_addr];
+
+        Vec2 node_range(0.f, std::numeric_limits<float>::infinity());
+        if(!node.bbox.hit(ray, node_range) || node_range.x >= ret.distance) continue;
+
+        if(node.is_leaf()) {
+            for(size_t i = node.start; i < node.start + node.size; i++) {
+                Trace trace = primitives[i].hit(ray);
+                if(trace.hit && trace.distance < ret.distance) {
+                    ret = trace;
+                }
+            }
+        } else {
+            Vec2 l_range(0.f, std::numeric_limits<float>::infinity());
+            Vec2 r_range(0.f, std::numeric_limits<float>::infinity());
+            bool hit_l = nodes[node.l].bbox.hit(ray, l_range);
+            bool hit_r = nodes[node.r].bbox.hit(ray, r_range);
+
+            bool l_valid = hit_l && (l_range.x < ret.distance);
+            bool r_valid = hit_r && (r_range.x < ret.distance);
+
+            if(l_valid && r_valid) {
+                if(l_range.x < r_range.x) {
+                    node_stack.push(node.r);
+                    node_stack.push(node.l);
+                } else {
+                    node_stack.push(node.l);
+                    node_stack.push(node.r);
+                }
+            } else if(l_valid) {
+                node_stack.push(node.l);
+            } else if(r_valid) {
+                node_stack.push(node.r);
+            }
+        }
     }
     return ret;
 }

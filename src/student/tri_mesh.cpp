@@ -32,6 +32,7 @@ Trace Triangle::hit(const Ray& ray) const {
 
     // You'll need to fill in a "Trace" struct describing information about the hit (or lack of hit)
 
+    //Moller–Trumbore intersection algorithm
     Vec3 p0 = v_0.position;
     Vec3 p1 = v_1.position;
     Vec3 p2 = v_2.position;
