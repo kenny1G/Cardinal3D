@@ -112,7 +112,7 @@ Spectrum Pathtracer::trace_ray(const Ray& ray) {
                 // recommended.
                 Ray shadow_ray(hit.position, sample.direction);
                 shadow_ray.dist_bounds = Vec2(EPS_F, sample.distance - EPS_F);
-                if (scene.hit(shadow_ray).hit) continue;
+                if(scene.hit(shadow_ray).hit) continue;
                 // Note: that along with the typical cos_theta, pdf factors, we divide by samples.
                 // This is because we're doing another monte-carlo estimate of the lighting from
                 // area lights here.
